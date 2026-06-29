@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en-US">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <link href="./css/index.css" rel="stylesheet" />
+    <title>Index</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bitcount+Single:wght@100..900&display=swap"
+      rel="stylesheet" />
+  </head>
+  <body>
+    <script>
+    function isLoggedIn() {
+      return document.cookie.includes("loggedIn=true");
+    }
+
+    if (!isLoggedIn()) {
+      window.location.href = "login.html";
+    }
+    </script>
+    <h1>Super cool start page</h1>
+    <h2>and i'm not lying</h2>
+    <p>here will go hyperlink<br>
+    <a href="meme">what a joke</a><br>
+    ahh there you are</p>
+    <p>also there is a cool sql button<br>
+    <a href="button">click!</a><p>
+  </body>
+</html>
