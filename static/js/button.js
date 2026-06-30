@@ -1,5 +1,6 @@
 const button = document.getElementById('clickBtn');
 const counter = document.getElementById('counter');
+const global = document.getElementById('global');
 
 class MetaDataCollector {
   constructor(message) {
@@ -21,16 +22,17 @@ const collector = new MetaDataCollector('hi');
 const meta_data = collector.getData();
 
 function sendOnClick() {
-  fetch("http://127.0.0.1:8080/api/click", {
+  fetch("http://localhost:3000/api/click", {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
     body: JSON.stringify(meta_data)
   })
-  .then(response => response.text())
+  .then(response => response.json())
   .then(data => {
-    counter.textContent = data;
+    counter.textContent = data.user_clicks;
+    global.textContent = data.global_clicks;
   });
 }
 

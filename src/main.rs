@@ -103,21 +103,64 @@ async fn insert_id_token(db: &Database, user: &UserResponse) -> Result<(), sqlx:
     Ok(())
 }
 
-#[axum::debug_handler]
+// we need logout, mb make just cookie eraser, that should work
+// we could do the token validity by making define value of LIFESPAN or configure db
+
+enum LoginError {
+    UserNotFound,
+    InvalidPassword,
+    DatabaseError,
+}
+
+#[derive(FromRow)]
+struct LoginUserCheck {
+    id: i32,
+    pswd: String,
+}
+
+async fn check_login(db: &Database, user: &CreateUser) -> Result<i32, LoginError> {
+    let found = sqlx::query_as!(
+        LoginUserCheck,
+        "SELECT id, pswd FROM users WHERE nick = $1",
+        user.nick
+    )
+    .fetch_one(&db.pool)
+    .await
+    .map_err(|e| match e {
+        sqlx::Error::RowNotFound => LoginError::UserNotFound,
+        _ => LoginError::DatabaseError,
+    })?;
+
+    if found.pswd == user.pswd {
+        Ok(found.id)
+    } else {
+        Err(LoginError::InvalidPassword)
+    }
+}
+
 async fn singin_handler(
     cookies: Cookies,
     Extension(db): Extension<Arc<Database>>,
     Json(user): Json<CreateUser>,
 ) -> Result<Json<UserResponse>, StatusCode> {
     println!("{} {}", &user.nick, &user.pswd);
-    let id = create_user(&db, user).await.map_err(|e| {
-        if let sqlx::Error::Database(db_e) = &e {
-            if db_e.code().as_deref() == Some("23505") {
-                return StatusCode::CONFLICT;
-            }
-        }
-        return StatusCode::INTERNAL_SERVER_ERROR;
-    })?;
+
+    let mut id: i32 = 0;
+    let mut found: bool = true;
+
+    match check_login(&db, &user).await {
+        Ok(i) => id = i,
+        Err(LoginError::UserNotFound) => found = false,
+        Err(LoginError::InvalidPassword) => return Err(StatusCode::UNAUTHORIZED),
+        Err(LoginError::DatabaseError) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+
+    if !found {
+        id = create_user(&db, user).await.map_err(|_| {
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        })?;
+    }
+
     let token = make_rand_token();
 
     let push = UserResponse { id, token };
@@ -153,7 +196,7 @@ async fn button_page_handler(
 
     let token = cookie.value();
 
-    let _session = sqlx::query!(
+    let _user_id = sqlx::query!(
         "
             SELECT user_id FROM sessions WHERE token = $1 AND created_at < NOW()
         ",
@@ -171,12 +214,56 @@ async fn button_page_handler(
         .map_err(|_| Redirect::to("/login")) //may god forbid me for this sin
 }
 
+#[derive(Serialize)]
+struct ClicksCounter {
+    user_clicks: i32,
+    global_clicks: i64,
+}
+
+async fn click_handler(
+    Extension(db): Extension<Arc<Database>>,
+    cookies: Cookies,
+) -> Result<Json<ClicksCounter>, Redirect> {
+    let cookie = cookies.get("session_token").ok_or(Redirect::to("/login"))?;
+
+    let token = cookie.value();
+
+    let session = sqlx::query!(
+        "
+            SELECT user_id FROM sessions WHERE token = $1 AND created_at < NOW()
+        ",
+        &token
+    )
+    .fetch_one(&db.pool)
+    .await
+    .map_err(|_| Redirect::to("/login"))?;
+
+    let u = sqlx::query_as!(
+        ClicksCounter,
+        r#"
+        UPDATE users
+        SET clicks = clicks + 1
+        WHERE id = $1
+        RETURNING
+            clicks AS user_clicks,
+            (SELECT COALESCE(SUM(clicks), 0) FROM users) AS "global_clicks!"
+        "#,
+        session.user_id
+    )
+    .fetch_one(&db.pool)
+    .await
+    .map_err(|_| Redirect::to("/login"))?;
+
+    Ok(Json(u))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(Database::new().await?);
 
     let app = axum::Router::new()
         .route("/api/singin", post(singin_handler))
+        .route("/api/click", post(click_handler))
         .route("/button", get(button_page_handler))
         .fallback_service(
             ServeDir::new("static").not_found_service(ServeFile::new("static/404.html")),
