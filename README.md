@@ -52,8 +52,7 @@ This project is primarily a learning project focused on backend development. The
 
 ## Future Improvements
 
-* Password hashing with Argon2
-* Session expiration and logout functionality
+* Session logout functionality
 * Better error handling
 * Automated tests
 * Docker support
