@@ -1,3 +1,7 @@
+use argon2::{
+    Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
+    password_hash::{SaltString, rand_core::OsRng},
+};
 use axum::{
     Extension, Json,
     http::StatusCode,
@@ -20,6 +24,8 @@ use tower_http::services::{ServeDir, ServeFile};
 struct Database {
     pool: PgPool,
 }
+
+const LIFESPAN: i32 = 52;
 
 impl Database {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
@@ -54,6 +60,15 @@ impl Database {
     }
 }
 
+fn create_password_hash(pswd: String) -> Result<String, argon2::password_hash::Error> {
+    let salt = SaltString::generate(&mut OsRng);
+
+    let argon2 = Argon2::default();
+
+    let hash = argon2.hash_password(&pswd.into_bytes(), &salt)?;
+    Ok(hash.to_string())
+}
+
 #[derive(Serialize, Deserialize)]
 struct CreateUser {
     nick: String,
@@ -72,6 +87,10 @@ struct CreatedUser {
 }
 
 async fn create_user(db: &Database, user: CreateUser) -> Result<i32, sqlx::Error> {
+    let pswd =
+        create_password_hash(user.pswd).map_err(|_| return sqlx::error::Error::WorkerCrashed)?;
+    // 100% need custom errors or other way deal with them
+    // withoud returning bs
     let created = sqlx::query_as!(
         CreatedUser,
         r#"
@@ -80,7 +99,7 @@ async fn create_user(db: &Database, user: CreateUser) -> Result<i32, sqlx::Error
             RETURNING id; 
         "#,
         user.nick,
-        user.pswd
+        pswd // we need to store password in hash and when we want to check it use PasswordHash::new()
     )
     .fetch_one(&db.pool)
     .await?;
@@ -104,12 +123,12 @@ async fn insert_id_token(db: &Database, user: &UserResponse) -> Result<(), sqlx:
 }
 
 // we need logout, mb make just cookie eraser, that should work
-// we could do the token validity by making define value of LIFESPAN or configure db
 
 enum LoginError {
     UserNotFound,
     InvalidPassword,
     DatabaseError,
+    PasswordHashError,
 }
 
 #[derive(FromRow)]
@@ -131,7 +150,13 @@ async fn check_login(db: &Database, user: &CreateUser) -> Result<i32, LoginError
         _ => LoginError::DatabaseError,
     })?;
 
-    if found.pswd == user.pswd {
+    let parsed_pswd_hash =
+        PasswordHash::new(&found.pswd).map_err(|_| LoginError::PasswordHashError)?;
+
+    if Argon2::default()
+        .verify_password(&user.pswd.as_bytes(), &parsed_pswd_hash) // b"password" == hash
+        .is_ok()
+    {
         Ok(found.id)
     } else {
         Err(LoginError::InvalidPassword)
@@ -152,7 +177,7 @@ async fn singin_handler(
         Ok(i) => id = i,
         Err(LoginError::UserNotFound) => found = false,
         Err(LoginError::InvalidPassword) => return Err(StatusCode::UNAUTHORIZED),
-        Err(LoginError::DatabaseError) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 
     if !found {
@@ -180,6 +205,7 @@ async fn singin_handler(
 }
 
 fn make_rand_token() -> String {
+    // mb use OsRng so code more consistent
     let mut buf = [0u8; 32];
     rand::rng().fill_bytes(&mut buf);
 
@@ -196,11 +222,13 @@ async fn button_page_handler(
 
     let token = cookie.value();
 
+    let lifespan: i32 = LIFESPAN;
     let _user_id = sqlx::query!(
         "
-            SELECT user_id FROM sessions WHERE token = $1 AND created_at < NOW()
-        ",
-        &token
+            SELECT user_id FROM sessions WHERE token = $1 AND created_at > (NOW() - ($2::integer || 'hours')::interval)
+        ",                                                          // :: is a typecast, || is a string concatination 
+        &token,
+        lifespan,
     )
     .fetch_one(&db.pool)
     .await

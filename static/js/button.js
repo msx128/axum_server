@@ -18,7 +18,7 @@ class MetaDataCollector {
   }
 }
 
-const collector = new MetaDataCollector('hi');
+const collector = new MetaDataCollector('hi'); // could delete that metadata, we just need post signal
 const meta_data = collector.getData();
 
 function sendOnClick() {
